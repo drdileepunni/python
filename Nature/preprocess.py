@@ -4,6 +4,7 @@ from sklearn.preprocessing import StandardScaler as scaler
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, roc_curve
+import copy
 
 class changeTypes:
     
@@ -116,7 +117,7 @@ class NNProcess:
         df_train_unscaled = self.dataFrame
         # Scaling of values
         numerics = df_train_unscaled.iloc[:,list(np.append(0, np.arange(3,24)))].columns
-        df_train_scaled = df_train_unscaled
+        df_train_scaled = copy.deepcopy(df_train_unscaled)
         for col in numerics:
             df_train_scaled[col] = pd.DataFrame(scaler().fit_transform(pd.DataFrame(df_train_scaled[col])))
 
@@ -275,7 +276,7 @@ class DatasetProcess:
         else:
             # Scaling of values
             numerics = df.iloc[:,list(np.append(0, np.arange(3,24)))].columns
-            df_train_scaled = df
+            df_train_scaled = copy.deepcopy(df)
             for col in numerics:
                 df_train_scaled[col] = pd.DataFrame(scaler().fit_transform(pd.DataFrame(df_train_scaled[col])))
             # One hot encoding
