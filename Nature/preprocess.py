@@ -5,6 +5,7 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, roc_curve
 import copy
+from sklearn.metrics import precision_recall_curve, auc, average_precision_score
 
 class changeTypes:
     
@@ -128,11 +129,13 @@ class NNProcess:
 
 class evaluate:
 
-    def __init__(self, df):
-        self.df = df
+    def __init__(self, pred, targ):
+        self.pred = pred
+        self.targ = targ
 
     def testPerformance(self, data_type, models, ap_tr_list):
-        df = self.df
+        pred = self.pred
+        targ = self.targ
 
         from sklearn.metrics import confusion_matrix, classification_report
         import matplotlib.pyplot as plt
@@ -142,8 +145,8 @@ class evaluate:
 
         # Dictionary of pipelines
         model_dict = {0: 'Stochastic Gradient Boost', 1: 'Gradient Boost', 2: 'RF with batch aggregation', 
-                    3: 'Random Forest', 4: 'DT with Batch Aggregation', 5: 'K Nearest Neighbours', 6: 'DecisionTree', 
-                    7: 'Logistic Regression', 8: 'Neural Network'}
+                    3: 'Random Forest', 4: 'DT with Batch Aggregation', 5: 'DecisionTree', 
+                    6: 'Logistic Regression', 7: 'XGBoost', 8: 'Neural Network'}
 
         roc_ls = []; 
         count_c = 0; count_r = 0
@@ -153,8 +156,14 @@ class evaluate:
         print('Evaluating performance...')
         case = []
         for idx, model in enumerate(models):        
-            X_train, y_train = DatasetProcess(df, model_dict[idx], data_type).dataprocess()
+            X_train, X_test, y_train, y_test = train_test_split(pred, targ, test_size=0.3, stratify=targ, random_state=62)
             t = []
+            if (data_type == 'test'):
+                X_train=X_test
+                y_train=y_test
+            elif (data_type == 'holdout'):
+                X_train=pred
+                y_train=targ
             # Preparing Dataset
             print('Preparing dataset...')
 
@@ -173,7 +182,7 @@ class evaluate:
             print('Score in training set: %s' % model_score)
             bag.append({'score':model_score})
             # Finding confidence intervals
-            confidence_lower, confidence_upper = Boot(y_train, y_train_pred).bootstrap()
+            confidence_lower, confidence_upper = Boot(y_train, y_train_pred).bootstrap('roc')
             print("Confidence interval for the score: [{:0.3f} - {:0.3}]".format(
             confidence_lower, confidence_upper))
             bag.append({'CI':(confidence_lower, confidence_upper)})
@@ -221,7 +230,7 @@ class Boot:
         self.y_train = y_train
         self.y_train_pred = y_train_pred
 
-    def bootstrap(self):
+    def bootstrap(self, name):
         y_train = self.y_train
         y_train_pred = self.y_train_pred
 
@@ -236,7 +245,12 @@ class Boot:
                 # We need at least one positive and one negative sample for ROC AUC
                 # to be defined: reject the sample
                 continue
-            score = roc_auc_score(y_train.values[indices], y_train_pred[indices])
+            if (name=='roc'):
+                score = roc_auc_score(y_train.values[indices], y_train_pred[indices])
+            elif (name=='prc'):
+                score = precision_recall_curve(y_train.values[indices], y_train_pred[indices])
+            elif (name=='ap'):
+                score = average_precision_score(y_train.values[indices], y_train_pred[indices])
             bootstrapped_scores.append(score)
         sorted_scores = np.array(bootstrapped_scores)
         sorted_scores.sort()
@@ -246,6 +260,7 @@ class Boot:
         confidence_lower = sorted_scores[int(0.05 * len(sorted_scores))]
         confidence_upper = sorted_scores[int(0.95 * len(sorted_scores))]
         return(confidence_lower, confidence_upper)
+
 
 class DatasetProcess:
 
@@ -294,3 +309,49 @@ class DatasetProcess:
                 y_train = targ_nn
                 
         return (X_train, y_train)
+
+class getFinal:
+
+    def __init__(self, df):
+        self.df = df
+
+    def process(self):
+        
+        df = self.df
+
+        # Defining and naming columns
+        df.columns = ['Unnamed: 0', 'Name', 'CPMRN', 'Month of Admission', 'Age', 'Gender',
+            'Hospital', 'Surgery', 'Vent mode', 'GCS', 'Temperature', 'HR', 'SpO2',
+            'SBP', 'MAP', 'RR', 'FiO2', 'PaO2', 'PaCO2', 'pH', 'A-a gradient',
+            'HCO3', 'Hb', 'TLC', 'Platelets', 'K', 'Na', 'Serum Cr', 'Blood Urea',
+            'Bili', 'Urine output', 'Lactate', 'INR', 'Survival']
+        to_drop = ['Unnamed: 0', 'Name', 'CPMRN', 'SBP', 'A-a gradient', 'Month of Admission', 
+                'HCO3', 'Hospital', 'Vent mode']
+        numerics = ['Age', 'Temperature', 'GCS', 'HR', 'SpO2', 'Hb', 'TLC', 'Platelets', 'K',
+                    'MAP', 'RR', 'FiO2', 'PaO2', 'PaCO2', 'pH', 'Na', 'Serum Cr', 'Blood Urea', 
+                    'Bili', 'Urine output', 'Lactate', 'INR']
+        categoricals = ['Gender', 'Surgery', 'Survival']
+
+        # Changing types and dropping columns
+        df1 = changeTypes(df).dropAndChange(to_drop, numerics, categoricals)
+
+        # Removing and replacing bad values
+        df2 = changeBad.change(df1)
+
+        # Imputation of Na values
+        df3 = Impute(df2).impute(numerics, categoricals)
+        df3_unscaled = pd.DataFrame.copy(df3)
+
+        # Encoding holdout3_unscaled
+        survival = {'Alive': 0,'Expired': 1} 
+        df3_unscaled['Survival'] = [survival[item] for item in df3_unscaled['Survival']] 
+
+        # Scaling encoding and returning 
+        X_h = df3_unscaled.drop('Survival', axis=1)
+        y_h = df3_unscaled['Survival']
+        X_h_encoded = pd.get_dummies(X_h, drop_first=True)
+        cols = X_h_encoded.columns[np.arange(0,22)]
+        for col in cols:
+            X_h_encoded[col] = pd.DataFrame(scaler().fit_transform(pd.DataFrame(X_h_encoded[col])))
+        
+        return (X_h_encoded, y_h)
