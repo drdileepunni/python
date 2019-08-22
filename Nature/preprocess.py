@@ -144,13 +144,12 @@ class evaluate:
         # List of models
 
         # Dictionary of pipelines
-        model_dict = {0: 'Stochastic Gradient Boost', 1: 'Gradient Boost', 2: 'RF with batch aggregation', 
-                    3: 'Random Forest', 4: 'DT with Batch Aggregation', 5: 'DecisionTree', 
-                    6: 'Logistic Regression', 7: 'XGBoost', 8: 'Neural Network'}
+        model_dict = {0: 'Stochastic Gradient Boost', 1: 'Gradient Boost', 2: 'Random Forest', 
+                        3: 'Logistic Regression', 4: 'XGBoost', 5: 'Neural Network'}
 
         roc_ls = []; 
         count_c = 0; count_r = 0
-        fig, axs = plt.subplots(3, 3)
+        fig, axs = plt.subplots(2, 3)
         hl_list = []
         
         print('Evaluating performance...')
@@ -355,3 +354,126 @@ class getFinal:
             X_h_encoded[col] = pd.DataFrame(scaler().fit_transform(pd.DataFrame(X_h_encoded[col])))
         
         return (X_h_encoded, y_h)
+
+class reliability:
+
+    def __init__(self, y_true, y_score, bins=6, normalize=False):
+        self.y_true = y_true
+        self.y_score = y_score
+        self.bins = bins
+        self.normalize = normalize
+
+    def reliability_curve(self):
+        y_true = self.y_true
+        y_score = self.y_score
+        bins = self.bins
+        normalize = self.normalize
+
+        if normalize:  # Normalize scores into bin [0, 1]
+            y_score = (y_score - y_score.min()) / (y_score.max() - y_score.min())
+
+        bin_width = 1.0 / bins
+        bin_centers = np.linspace(0, 1.0 - bin_width, bins) + bin_width / 2
+
+        y_score_bin_mean = np.empty(bins)
+        empirical_prob_pos = np.empty(bins)
+        for i, threshold in enumerate(bin_centers):
+            # determine all samples where y_score falls into the i-th bin
+            bin_idx = np.logical_and(threshold - bin_width / 2 < y_score,
+                                    y_score <= threshold + bin_width / 2)
+            # Store mean y_score and mean empirical probability of positive class
+            y_score_bin_mean[i] = y_score[bin_idx].mean()
+            empirical_prob_pos[i] = y_true[bin_idx].mean()
+        return y_score_bin_mean, empirical_prob_pos
+
+class Calibration_curves:
+
+    def __init__(self, pred, targ, data_type, models, ap_tr_list):
+        self.pred = pred
+        self.targ = targ
+        self.data_type = data_type
+        self.models = models
+        self.ap_tr_list = ap_tr_list
+    
+    def getCalibCurves(self):
+        pred = self.pred
+        targ = self.targ
+        data_type = self.data_type
+        models = self.models
+        ap_tr_list = self.ap_tr_list
+
+        trop = ap_tr_list[0]; ap = ap_tr_list[1]
+        import matplotlib.pyplot as plt
+        
+        # Dictionary of pipelines
+        model_dict = {0: 'Stochastic Gradient Boost', 1: 'Gradient Boost',  2: 'Random Forest', 
+                    3: 'Logistic Regression', 4: 'XGBoost', 5: 'Neural Network'}
+        calib_ls = {}
+        count_c = 0; count_r = 0
+        fig, axs = plt.subplots(2, 3)
+        print('Evaluating performance...')
+        case = []
+        reliability_scores = {}
+
+        X_train, X_test, y_train, y_test = train_test_split(pred, targ, test_size=0.3, stratify=targ, random_state=62)
+        n_bins = 8
+        if (data_type == 'test'):
+            print('test subset...')
+            X_train=X_test
+            y_train=y_test
+            n_bins = 8
+        elif (data_type == 'holdout'):
+            print('holdout subset...')
+            X_train=pred
+            y_train=targ
+            n_bins = 5
+
+        flatten = lambda l: [item for sublist in l for item in sublist]
+        for idx, model in enumerate(models):        
+            # Preparing Dataset
+            print('Preparing dataset...')
+            # Evaluating
+            print('Evaluating...')
+            print('\nEstimator: %s' % model_dict[idx])
+            # APACHE values
+            ap_score_bin_mean, ap_empirical_prob_pos = reliability(y_train, ap, normalize=True, bins=n_bins).reliability_curve()
+            ap_scores_not_nan = np.logical_not(np.isnan(ap_empirical_prob_pos))
+            # Trop values
+            trop_score_bin_mean, trop_empirical_prob_pos = reliability(y_train, trop, normalize=True, bins=n_bins).reliability_curve()
+            trop_scores_not_nan = np.logical_not(np.isnan(trop_empirical_prob_pos))
+            
+            # Predict
+            if (model_dict[idx] == 'Logistic Regression'):
+                y_score_bin_mean, empirical_prob_pos = reliability(y_train, model.predict_proba(X_train)[:, 1], normalize=True, bins=n_bins).reliability_curve()        
+            elif (model_dict[idx] == 'Neural Network'):
+                y_score_bin_mean, empirical_prob_pos = reliability(y_train, np.array(flatten(model.predict(X_train))), normalize=True, bins=n_bins).reliability_curve()
+            else:
+                y_score_bin_mean, empirical_prob_pos = reliability(y_train, model.predict(X_train), normalize=True, bins=n_bins).reliability_curve()
+            
+            # Plotting 
+            axs[count_r, count_c].plot([0.0, 1.0], [0.0, 1.0], 'k', label="Perfect", ls='--')
+            scores_not_nan = np.logical_not(np.isnan(empirical_prob_pos))
+            axs[count_r, count_c].plot(y_score_bin_mean[scores_not_nan],empirical_prob_pos[scores_not_nan], 
+                                    label=model_dict[idx], lw=2)
+            axs[count_r, count_c].plot(ap_score_bin_mean[ap_scores_not_nan],ap_empirical_prob_pos[ap_scores_not_nan], 
+                                    label='APACHE')
+            axs[count_r, count_c].plot(trop_score_bin_mean[trop_scores_not_nan],trop_empirical_prob_pos[trop_scores_not_nan], 
+                                    label='TropICS')
+            axs[count_r, count_c].set_title(model_dict[idx], fontsize = 1)
+            axs[count_r, count_c].legend(loc='upper left')
+            calib_ls[model_dict[idx]] = (y_score_bin_mean[scores_not_nan],empirical_prob_pos[scores_not_nan])
+            
+            for ax in axs.flat:
+                ax.set(xlabel='Predicted probability', ylabel='Observed probability')
+            for ax in axs.flat:
+                ax.label_outer()
+
+            count_c +=1
+            if (count_c>2):
+                count_r +=1
+                count_c = 0
+            
+            fig1 = plt.gcf()
+            fig1.set_size_inches(16, 8)
+            fig1.savefig('Calib_{}.png'.format(data_type), dpi=600)
+        return calib_ls
